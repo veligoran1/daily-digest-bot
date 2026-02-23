@@ -198,7 +198,7 @@ def get_kaggle_competitions():
         api = KaggleApi()
         api.authenticate()
 
-        competitions = api.competitions_list()
+        competitions = api.competitions_list().competitions
         recent_comps = []
         now = datetime.now()
 
