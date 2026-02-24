@@ -272,7 +272,7 @@ def get_summary_parts(posts, target_date):
     # 3. SPRINGER
     if springer_posts:
         springer_context = "\n\n".join([
-            f"{i+1}. Название: {p['title']}\nТекст: {p.get('text', '')[:1000]}\nСсылка: {p['link']}"
+            f"{i+1}. Название: {p['title']}\nТекст: {p.get('text', '')[:800]}\nСсылка: {p['link']}"
             for i, p in enumerate(springer_posts)
         ])
         springer_prompt = f"""Для КАЖДОЙ научной статьи создай саммари НА РУССКОМ ЯЗЫКЕ.
@@ -292,7 +292,7 @@ def get_summary_parts(posts, target_date):
     # 4. БЛОГИ
     if blog_posts:
         blog_context = "\n\n".join([
-            f"{i+1}. Название: {p['title']}\nТекст: {p.get('text', '')[:2000]}\nСсылка: {p['link']}"
+            f"{i+1}. Название: {p['title']}\nТекст: {p.get('text', '')[:1500]}\nСсылка: {p['link']}"
             for i, p in enumerate(blog_posts)
         ])
         blog_prompt = f"""Для КАЖДОЙ статьи создай подробное саммари НА РУССКОМ ЯЗЫКЕ.
