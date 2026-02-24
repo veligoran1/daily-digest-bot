@@ -31,8 +31,8 @@ SOURCES = {
         'https://hackernoon.com/c/data-science',
         'https://hackernoon.com/c/programming'
     ],
-    'springer': [
-        'https://link.springer.com/search?query=&content-type=Article&content-type=Conference+Paper&content-type=Research&taxonomy=%22Machine+Learning%22&taxonomy=%22Optimization%22&taxonomy=%22Artificial+Intelligence%22&sortBy=relevance'
+    'arxiv': [
+    'http://export.arxiv.org/api/query?search_query=cat:cs.LG+OR+cat:cs.AI+OR+cat:cs.CV+OR+cat:math.OC+OR+cat:stat.ML&sortBy=submittedDate&sortOrder=descending&max_results=20'
     ]
 }
 
@@ -123,37 +123,26 @@ def parse_articles(url, days_back=0):
                 except Exception:
                     pass
 
-        elif 'springer.com' in url:
+        elif 'arxiv.org' in url:
+            import xml.etree.ElementTree as ET
             response = requests.get(url, headers=headers, timeout=30)
-            soup = BeautifulSoup(response.content, 'html.parser')
-            articles = soup.find_all('li', class_='app-card-open')
+            ns = {'atom': 'http://www.w3.org/2005/Atom'}
+            root = ET.fromstring(response.text)
 
-            for article in articles:
-                date_span = article.find('span', {'data-test': 'published'})
-                if not date_span:
-                    continue
-                try:
-                    pub_date = datetime.strptime(date_span.get_text(strip=True), '%d %B %Y').date()
-                    if pub_date != target_date:
-                        continue
-                except Exception:
+            for entry in root.findall('atom:entry', ns):
+                published = entry.find('atom:published', ns).text[:10]
+                pub_date = datetime.strptime(published, '%Y-%m-%d').date()
+                if pub_date != target_date:
                     continue
 
-                title_elem = article.find('h3', class_='app-card-open__heading')
-                link_elem = title_elem.find('a') if title_elem else None
-                if not link_elem:
-                    continue
-
-                title = link_elem.get_text(strip=True)
-                link = 'https://link.springer.com' + link_elem['href']
-
-                desc_elem = article.find('div', class_='app-card-open__description')
-                description = desc_elem.get_text(strip=True) if desc_elem else ''
+                title = entry.find('atom:title', ns).text.strip().replace('\n', ' ')
+                link = entry.find('atom:id', ns).text
+                summary = entry.find('atom:summary', ns).text.strip().replace('\n', ' ')
 
                 posts.append({
                     'title': title,
                     'link': link,
-                    'text': description,
+                    'text': summary,
                     'datetime': datetime.combine(pub_date, datetime.min.time()),
                     'date': pub_date,
                     'source': url
@@ -193,31 +182,48 @@ def get_full_article(url):
 
 
 def get_kaggle_competitions():
-    try:
-        from kaggle.api.kaggle_api_extended import KaggleApi
-        api = KaggleApi()
-        api.authenticate()
+    """Получает соревнования Kaggle напрямую через HTTP API."""
+    token = os.environ.get('KAGGLE_API_TOKEN', '')
+    if not token:
+        print("⚠️ KAGGLE_API_TOKEN не задан, пропускаем Kaggle")
+        return []
 
-        competitions = api.competitions_list().competitions
+    try:
+        headers = {'Authorization': f'Bearer {token}'}
+        r = requests.get(
+            'https://www.kaggle.com/api/v1/competitions/list?page=1',
+            headers=headers, timeout=30
+        )
+        r.raise_for_status()
+
+        competitions = r.json()
         recent_comps = []
         now = datetime.now()
 
         for comp in competitions:
-            days_since_start = (now - comp.enabled_date).days
-            if days_since_start <= 30 and comp.team_count > 50:
+            enabled_str = comp.get('enabledDate', '')
+            if not enabled_str:
+                continue
+
+            enabled_date = datetime.fromisoformat(enabled_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            days_since_start = (now - enabled_date).days
+            team_count = comp.get('teamCount', 0)
+
+            if days_since_start <= 30 and team_count > 50:
                 recent_comps.append({
-                    'title': comp.title,
-                    'link': comp.url,
-                    'text': f"{comp.description}. Соревнование началось {comp.enabled_date.date()}, участвует {comp.team_count} команд.",
-                    'teams': comp.team_count,
-                    'date': comp.enabled_date.date(),
-                    'datetime': comp.enabled_date.replace(tzinfo=None),
+                    'title': comp.get('title', ''),
+                    'link': f"https://www.kaggle.com/competitions/{comp.get('ref', '')}",
+                    'text': f"{comp.get('description', '')}. Соревнование началось {enabled_date.date()}, участвует {team_count} команд.",
+                    'teams': team_count,
+                    'date': enabled_date.date(),
+                    'datetime': enabled_date,
                     'days_since_start': days_since_start,
                     'source': 'kaggle'
                 })
 
         recent_comps.sort(key=lambda x: x['teams'], reverse=True)
         return recent_comps[:5]
+
     except Exception as e:
         print(f"Ошибка Kaggle API: {e}")
         return []
@@ -227,11 +233,11 @@ def get_kaggle_competitions():
 
 def get_summary_parts(posts, target_date):
     kaggle_posts = [p for p in posts if p.get('source') == 'kaggle']
-    springer_posts = [p for p in posts if 'springer.com' in p['link']]
+    arxiv_posts = [p for p in posts if 'arxiv.org' in p['link']]
     blog_posts = [p for p in posts if 'habr.com' in p['link'] or 'hackernoon.com' in p['link']]
 
     date_str = target_date.strftime('%d.%m.%Y')
-    result = {'annotation': '', 'kaggle': [], 'springer': '', 'blogs': ''}
+    result = {'annotation': '', 'kaggle': [], 'arxiv': '', 'blogs': ''}
 
     # 1. АННОТАЦИЯ
     all_titles = [f"- {p['title']}" for p in posts]
@@ -269,15 +275,15 @@ def get_summary_parts(posts, target_date):
 
         result['kaggle'].append(ask_llm(kg_prompt, max_tokens=200))
 
-    # 3. SPRINGER
-    if springer_posts:
-        springer_context = "\n\n".join([
+    # 3. ARXIV
+    if arxiv_posts:
+        arxiv_context = "\n\n".join([
             f"{i+1}. Название: {p['title']}\nТекст: {p.get('text', '')[:800]}\nСсылка: {p['link']}"
-            for i, p in enumerate(springer_posts)
+            for i, p in enumerate(arxiv_posts)
         ])
-        springer_prompt = f"""Для КАЖДОЙ научной статьи создай саммари НА РУССКОМ ЯЗЫКЕ.
+        arxiv_prompt = f"""Для КАЖДОЙ научной статьи создай саммари НА РУССКОМ ЯЗЫКЕ.
 
-{springer_context}
+{arxiv_context}
 
 ТРЕБОВАНИЯ для КАЖДОЙ статьи:
 - 3-4 предложения, ТОЛЬКО русский
@@ -287,7 +293,7 @@ def get_summary_parts(posts, target_date):
 1. [Саммари] - [ссылка]
 2. [Саммари] - [ссылка]"""
 
-        result['springer'] = ask_llm(springer_prompt, max_tokens=1500)
+        result['arxiv'] = ask_llm(arxiv_prompt, max_tokens=1500)
 
     # 4. БЛОГИ
     if blog_posts:
@@ -347,9 +353,9 @@ async def send_to_telegram(parts, target_date):
             msg += f"{i}. {kg}\n\n"
         await safe_send(msg)
 
-    # 3. Springer
-    if parts['springer']:
-        await safe_send(f"📚 НАУЧНЫЕ СТАТЬИ:\n\n{parts['springer']}")
+    # 3. Arxiv
+    if parts['arxiv']:
+        await safe_send(f"📚 НАУЧНЫЕ СТАТЬИ:\n\n{parts['arxiv']}")
 
     # 4. Блоги
     if parts['blogs']:
@@ -382,10 +388,10 @@ def main(days_back=1):
     unique_posts = {post['link']: post for post in all_posts}
     all_posts = list(unique_posts.values())
 
-    # Ограничение Springer
-    springer = [p for p in all_posts if 'springer.com' in p['link']][:5]
-    others = [p for p in all_posts if 'springer.com' not in p['link']]
-    all_posts = others + springer
+    # Ограничение Arxiv
+    arxiv = [p for p in all_posts if 'arxiv.com' in p['link']][:5]
+    others = [p for p in all_posts if 'arxiv.com' not in p['link']]
+    all_posts = others + arxiv
 
     # Загрузка текстов
     for post in all_posts:
